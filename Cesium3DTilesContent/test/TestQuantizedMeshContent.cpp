@@ -761,6 +761,80 @@ TEST_CASE("Test converting quantized mesh to gltf with skirt") {
         verticesHeight);
   }
 
+  SECTION("Check created quantized mesh that has uint16_t indices") {
+    // mock quantized mesh
+    uint32_t verticesWidth = 3;
+    uint32_t verticesHeight = 3;
+    QuadtreeTileID tileID(10, 0, 0);
+    CesiumGeometry::Rectangle tileRectangle =
+        tilingScheme.tileToRectangle(tileID);
+    BoundingRegion boundingVolume = BoundingRegion(
+        GlobeRectangle(
+            tileRectangle.minimumX,
+            tileRectangle.minimumY,
+            tileRectangle.maximumX,
+            tileRectangle.maximumY),
+        0.0,
+        0.0);
+    QuantizedMesh<uint16_t> quantizedMesh = createGridQuantizedMesh<uint16_t>(
+        boundingVolume,
+        verticesWidth,
+        verticesHeight);
+
+    // convert to gltf
+    std::vector<std::byte> quantizedMeshBin =
+        convertQuantizedMeshToBinary(quantizedMesh);
+    gsl::span<const std::byte> data(
+        quantizedMeshBin.data(),
+        quantizedMeshBin.size());
+    QuantizedMeshLoadResult loadResult = QuantizedMeshLoader::createGridMesh(
+        tileID,
+        boundingVolume,
+        verticesWidth,
+        verticesHeight);
+    REQUIRE(!loadResult.errors.hasErrors());
+    REQUIRE(loadResult.model != std::nullopt);
+
+    // make sure the gltf is the grid
+    const CesiumGltf::Model& model = *loadResult.model;
+    const CesiumGltf::Mesh& mesh = model.meshes.front();
+    const CesiumGltf::MeshPrimitive& primitive = mesh.primitives.front();
+
+    // make sure mesh contains grid mesh and skirts at the end
+    AccessorView<uint16_t> indices(model, primitive.indices);
+    CHECK(indices.status() == AccessorViewStatus::Valid);
+    AccessorView<glm::vec3> positions(
+        model,
+        primitive.attributes.at("POSITION"));
+    CHECK(positions.status() == AccessorViewStatus::Valid);
+
+    checkGridMesh(
+        quantizedMesh,
+        indices,
+        positions,
+        tilingScheme,
+        ellipsoid,
+        tileRectangle,
+        verticesWidth,
+        verticesHeight);
+
+    // check normal
+    AccessorView<glm::vec3> normals(model, primitive.attributes.at("NORMAL"));
+    CHECK(normals.status() == AccessorViewStatus::Valid);
+
+    Cartographic center = boundingVolume.getRectangle().computeCenter();
+    glm::vec3 geodeticNormal =
+        static_cast<glm::vec3>(ellipsoid.geodeticSurfaceNormal(center));
+    checkGeneratedGridNormal(
+        quantizedMesh,
+        normals,
+        positions,
+        indices,
+        geodeticNormal,
+        verticesWidth,
+        verticesHeight);
+  }
+
   SECTION("Check quantized mesh that has uint32_t indices") {
     // mock quantized mesh
     uint32_t verticesWidth = 300;

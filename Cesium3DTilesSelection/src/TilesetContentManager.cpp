@@ -1,6 +1,7 @@
 #include "TilesetContentManager.h"
 
 #include "CesiumIonTilesetLoader.h"
+#include "EllipsoidTerrainLoader.h"
 #include "LayerJsonTerrainLoader.h"
 #include "TileContentLoadInfo.h"
 #include "TilesetJsonLoader.h"
@@ -646,6 +647,30 @@ TilesetContentManager::TilesetContentManager(
     this->notifyTileStartLoading(nullptr);
 
     CesiumUtility::IntrusivePointer<TilesetContentManager> thiz = this;
+
+    if (EllipsoidTerrainLoader::isProjectionString(url)) {
+      EllipsoidTerrainLoader::createLoader(externals, url)
+          .thenInMainThread(
+              [thiz, errorCallback = tilesetOptions.loadErrorCallback](
+                  TilesetContentLoaderResult<TilesetContentLoader>&& result) {
+                thiz->notifyTileDoneLoading(result.pRootTile.get());
+                thiz->propagateTilesetContentLoaderResult(
+                    TilesetLoadType::TilesetJson,
+                    errorCallback,
+                    std::move(result));
+                thiz->_rootTileAvailablePromise.resolve();
+              })
+          .catchInMainThread([thiz](std::exception&& e) {
+            thiz->notifyTileDoneLoading(nullptr);
+            SPDLOG_LOGGER_ERROR(
+                thiz->_externals.pLogger,
+                "An unexpected error occurred when loading tile: {}",
+                e.what());
+            thiz->_rootTileAvailablePromise.reject(
+                std::runtime_error("Root tile failed to load."));
+          });
+      return;
+    }
 
     externals.pAssetAccessor
         ->get(externals.asyncSystem, url, this->_requestHeaders)

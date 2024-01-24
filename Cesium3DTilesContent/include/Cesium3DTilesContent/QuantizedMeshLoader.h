@@ -71,7 +71,7 @@ public:
    * @brief Create a {@link QuantizedMeshLoadResult} from the given data.
    *
    * @param tileID The tile ID.
-   * @param tileBoundingVoume The tile bounding volume.
+   * @param tileBoundingVolume The tile bounding volume.
    * @param url The URL from which the data was loaded.
    * @param data The actual tile data.
    * @return The {@link QuantizedMeshLoadResult}
@@ -82,6 +82,19 @@ public:
       const std::string& url,
       const gsl::span<const std::byte>& data,
       bool enableWaterMask);
+
+  /**
+   * @brief Create a {@link QuantizedMeshLoadResult} from the given data.
+   *
+   * @param tileID The tile ID.
+   * @param tileBoundingVolume The tile bounding volume.
+   * @return The {@link QuantizedMeshLoadResult}
+   */
+  static QuantizedMeshLoadResult createGridMesh(
+      const CesiumGeometry::QuadtreeTileID& tileID,
+      const CesiumGeospatial::BoundingRegion& tileBoundingVolume,
+      uint32_t verticesWidth,
+      uint32_t verticesHeight);
 
   /**
    * @brief Parses the metadata (tile availability) from the given

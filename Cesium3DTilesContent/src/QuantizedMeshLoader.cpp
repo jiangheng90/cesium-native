@@ -111,6 +111,346 @@ struct QuantizedMeshView {
   gsl::span<const char> metadataJsonBuffer;
 };
 
+namespace MeshRaw {
+struct QuantizedMeshHeader {
+  double centerX;
+  double centerY;
+  double centerZ;
+
+  float minimumHeight;
+  float maximumHeight;
+
+  double boundingSphereCenterX;
+  double boundingSphereCenterY;
+  double boundingSphereCenterZ;
+  double boundingSphereRadius;
+
+  double horizonOcclusionPointX;
+  double horizonOcclusionPointY;
+  double horizonOcclusionPointZ;
+};
+
+template <typename T> struct MeshData {
+  std::vector<uint16_t> u;
+  std::vector<uint16_t> v;
+  std::vector<uint16_t> height;
+  std::vector<T> indices;
+  std::vector<T> westIndices;
+  std::vector<T> southIndices;
+  std::vector<T> eastIndices;
+  std::vector<T> northIndices;
+};
+
+struct Extension {
+  uint8_t extensionID;
+  std::vector<std::byte> extensionData;
+};
+
+template <typename T> struct QuantizedMesh {
+  QuantizedMeshHeader header;
+  MeshData<T> vertexData;
+  std::vector<Extension> extensions;
+};
+
+uint32_t index2DTo1D(uint32_t x, uint32_t y, uint32_t width) {
+  return y * width + x;
+}
+
+uint16_t zigzagEncode(int16_t n) {
+  return static_cast<uint16_t>((((uint16_t)n << 1) ^ (n >> 15)) & 0xFFFF);
+}
+
+int32_t zigZagDecode(int32_t value) { return (value >> 1) ^ (-(value & 1)); }
+
+void octEncode(glm::vec3 normal, uint8_t& x, uint8_t& y) {
+  float inv =
+      1.0f / (glm::abs(normal.x) + glm::abs(normal.y) + glm::abs(normal.z));
+  glm::vec2 p;
+  p.x = normal.x * inv;
+  p.y = normal.y * inv;
+
+  if (normal.z <= 0.0) {
+    x = static_cast<uint8_t>(Math::toSNorm(
+        (1.0f - glm::abs(p.y)) * static_cast<float>(Math::signNotZero(p.x))));
+    y = static_cast<uint8_t>(Math::toSNorm(
+        (1.0f - glm::abs(p.x)) * static_cast<float>(Math::signNotZero(p.y))));
+  } else {
+    x = static_cast<uint8_t>(Math::toSNorm(p.x));
+    y = static_cast<uint8_t>(Math::toSNorm(p.y));
+  }
+}
+
+template <typename T>
+std::vector<std::byte>
+convertQuantizedMeshToBinary(const QuantizedMesh<T>& quantizedMesh) {
+  // compute the total size of mesh to preallocate
+  size_t totalSize = sizeof(quantizedMesh.header) +
+                     sizeof(uint32_t) + // vertex data
+                     quantizedMesh.vertexData.u.size() * sizeof(uint16_t) +
+                     quantizedMesh.vertexData.v.size() * sizeof(uint16_t) +
+                     quantizedMesh.vertexData.height.size() * sizeof(uint16_t) +
+                     sizeof(uint32_t) + // indices data
+                     quantizedMesh.vertexData.indices.size() * sizeof(T) +
+                     sizeof(uint32_t) + // west edge
+                     quantizedMesh.vertexData.westIndices.size() * sizeof(T) +
+                     sizeof(uint32_t) + // south edge
+                     quantizedMesh.vertexData.southIndices.size() * sizeof(T) +
+                     sizeof(uint32_t) + // east edge
+                     quantizedMesh.vertexData.eastIndices.size() * sizeof(T) +
+                     sizeof(uint32_t) + // north edge
+                     quantizedMesh.vertexData.northIndices.size() * sizeof(T);
+
+  for (const Extension& extension : quantizedMesh.extensions) {
+    totalSize +=
+        sizeof(uint8_t) + sizeof(uint32_t) + extension.extensionData.size();
+  }
+
+  size_t offset = 0;
+  size_t length = 0;
+  std::vector<std::byte> buffer(totalSize);
+
+  // serialize header
+  length = sizeof(quantizedMesh.header);
+  std::memcpy(
+      buffer.data(),
+      &quantizedMesh.header,
+      sizeof(quantizedMesh.header));
+
+  // vertex count
+  offset += length;
+  uint32_t vertexCount =
+      static_cast<uint32_t>(quantizedMesh.vertexData.u.size());
+  length = sizeof(vertexCount);
+  std::memcpy(buffer.data() + offset, &vertexCount, length);
+
+  // u buffer
+  offset += length;
+  length = quantizedMesh.vertexData.u.size() * sizeof(uint16_t);
+  std::memcpy(
+      buffer.data() + offset,
+      quantizedMesh.vertexData.u.data(),
+      length);
+
+  // v buffer
+  offset += length;
+  length = quantizedMesh.vertexData.v.size() * sizeof(uint16_t);
+  std::memcpy(
+      buffer.data() + offset,
+      quantizedMesh.vertexData.v.data(),
+      length);
+
+  // height buffer
+  offset += length;
+  length = quantizedMesh.vertexData.height.size() * sizeof(uint16_t);
+  std::memcpy(
+      buffer.data() + offset,
+      quantizedMesh.vertexData.height.data(),
+      length);
+
+  // triangle count
+  offset += length;
+  uint32_t triangleCount =
+      static_cast<uint32_t>(quantizedMesh.vertexData.indices.size()) / 3;
+  length = sizeof(triangleCount);
+  std::memcpy(buffer.data() + offset, &triangleCount, length);
+
+  // indices buffer
+  offset += length;
+  length = quantizedMesh.vertexData.indices.size() * sizeof(T);
+  std::memcpy(
+      buffer.data() + offset,
+      quantizedMesh.vertexData.indices.data(),
+      length);
+
+  // west edge count
+  offset += length;
+  uint32_t westIndicesCount =
+      static_cast<uint32_t>(quantizedMesh.vertexData.westIndices.size());
+  length = sizeof(westIndicesCount);
+  std::memcpy(buffer.data() + offset, &westIndicesCount, length);
+
+  // west edge buffer
+  offset += length;
+  length = quantizedMesh.vertexData.westIndices.size() * sizeof(T);
+  std::memcpy(
+      buffer.data() + offset,
+      quantizedMesh.vertexData.westIndices.data(),
+      length);
+
+  // south edge count
+  offset += length;
+  uint32_t southIndicesCount =
+      static_cast<uint32_t>(quantizedMesh.vertexData.southIndices.size());
+  length = sizeof(southIndicesCount);
+  std::memcpy(buffer.data() + offset, &southIndicesCount, length);
+
+  // south edge buffer
+  offset += length;
+  length = quantizedMesh.vertexData.southIndices.size() * sizeof(T);
+  std::memcpy(
+      buffer.data() + offset,
+      quantizedMesh.vertexData.southIndices.data(),
+      length);
+
+  // east edge count
+  offset += length;
+  uint32_t eastIndicesCount =
+      static_cast<uint32_t>(quantizedMesh.vertexData.eastIndices.size());
+  length = sizeof(eastIndicesCount);
+  std::memcpy(buffer.data() + offset, &eastIndicesCount, length);
+
+  // east edge buffer
+  offset += length;
+  length = quantizedMesh.vertexData.eastIndices.size() * sizeof(T);
+  std::memcpy(
+      buffer.data() + offset,
+      quantizedMesh.vertexData.eastIndices.data(),
+      length);
+
+  // north edge count
+  offset += length;
+  uint32_t northIndicesCount =
+      static_cast<uint32_t>(quantizedMesh.vertexData.northIndices.size());
+  length = sizeof(northIndicesCount);
+  std::memcpy(buffer.data() + offset, &northIndicesCount, length);
+
+  // north edge buffer
+  offset += length;
+  length = quantizedMesh.vertexData.northIndices.size() * sizeof(T);
+  std::memcpy(
+      buffer.data() + offset,
+      quantizedMesh.vertexData.northIndices.data(),
+      length);
+
+  // serialize extension
+  for (const Extension& extension : quantizedMesh.extensions) {
+    // serialize extension ID
+    offset += length;
+    length = sizeof(extension.extensionID);
+    std::memcpy(buffer.data() + offset, &extension.extensionID, length);
+
+    // serialize extension length
+    offset += length;
+    uint32_t extensionLength =
+        static_cast<uint32_t>(extension.extensionData.size());
+    length = sizeof(extensionLength);
+    std::memcpy(buffer.data() + offset, &extensionLength, length);
+
+    // serialize extension data
+    offset += length;
+    length = extension.extensionData.size();
+    std::memcpy(buffer.data() + offset, extension.extensionData.data(), length);
+  }
+
+  return buffer;
+}
+
+template <class T>
+QuantizedMesh<T> createGridQuantizedMesh(
+    const BoundingRegion& region,
+    uint32_t width,
+    uint32_t height) {
+  if (width * height > std::numeric_limits<T>::max()) {
+    throw std::invalid_argument("Number of vertices can be overflowed");
+  }
+
+  QuantizedMesh<T> quantizedMesh;
+  const Ellipsoid& ellipsoid = Ellipsoid::WGS84;
+  Cartographic cartoCenter = region.getRectangle().computeCenter();
+  glm::dvec3 center = ellipsoid.cartographicToCartesian(cartoCenter);
+  glm::dvec3 corner =
+      ellipsoid.cartographicToCartesian(region.getRectangle().getNortheast());
+
+  quantizedMesh.header.centerX = center.x;
+  quantizedMesh.header.centerY = center.y;
+  quantizedMesh.header.centerZ = center.z;
+
+  quantizedMesh.header.minimumHeight =
+      static_cast<float>(region.getMinimumHeight());
+  quantizedMesh.header.maximumHeight =
+      static_cast<float>(region.getMaximumHeight());
+
+  quantizedMesh.header.boundingSphereCenterX = center.x;
+  quantizedMesh.header.boundingSphereCenterY = center.y;
+  quantizedMesh.header.boundingSphereCenterZ = center.z;
+  quantizedMesh.header.boundingSphereRadius = glm::distance(center, corner);
+
+  quantizedMesh.header.horizonOcclusionPointX = 0.0;
+  quantizedMesh.header.horizonOcclusionPointY = 0.0;
+  quantizedMesh.header.horizonOcclusionPointZ = 0.0;
+
+  uint16_t lastU = 0;
+  uint16_t lastV = 0;
+
+  for (uint32_t y = 0; y < height; ++y) {
+    for (uint32_t x = 0; x < width; ++x) {
+      // encode u, v, and height buffers
+      uint16_t u = static_cast<uint16_t>(
+          (static_cast<double>(x) / static_cast<double>(width - 1)) * 32767.0);
+      uint16_t v = static_cast<uint16_t>(
+          ((static_cast<double>(y) / static_cast<double>(height - 1))) *
+          32767.0);
+      int16_t deltaU = static_cast<int16_t>(u - lastU);
+      int16_t deltaV = static_cast<int16_t>(v - lastV);
+      quantizedMesh.vertexData.u.emplace_back(zigzagEncode(deltaU));
+      quantizedMesh.vertexData.v.emplace_back(zigzagEncode(deltaV));
+      quantizedMesh.vertexData.height.push_back(0);
+
+      lastU = u;
+      lastV = v;
+
+      if (x < width - 1 && y < height - 1) {
+        quantizedMesh.vertexData.indices.emplace_back(
+            static_cast<T>(index2DTo1D(x, y, width)));
+        quantizedMesh.vertexData.indices.emplace_back(
+            static_cast<T>(index2DTo1D(x + 1, y, width)));
+        quantizedMesh.vertexData.indices.emplace_back(
+            static_cast<T>(index2DTo1D(x, y + 1, width)));
+
+        quantizedMesh.vertexData.indices.emplace_back(
+            static_cast<T>(index2DTo1D(x + 1, y, width)));
+        quantizedMesh.vertexData.indices.emplace_back(
+            static_cast<T>(index2DTo1D(x + 1, y + 1, width)));
+        quantizedMesh.vertexData.indices.emplace_back(
+            static_cast<T>(index2DTo1D(x, y + 1, width)));
+      }
+
+      if (y == 0) {
+        quantizedMesh.vertexData.southIndices.emplace_back(
+            static_cast<T>(index2DTo1D(x, y, width)));
+      }
+
+      if (y == height - 1) {
+        quantizedMesh.vertexData.northIndices.emplace_back(
+            static_cast<T>(index2DTo1D(x, y, width)));
+      }
+
+      if (x == 0) {
+        quantizedMesh.vertexData.westIndices.emplace_back(
+            static_cast<T>(index2DTo1D(x, y, width)));
+      }
+
+      if (x == width - 1) {
+        quantizedMesh.vertexData.eastIndices.emplace_back(
+            static_cast<T>(index2DTo1D(x, y, width)));
+      }
+    }
+  }
+
+  // hight water mark encoding indices
+  T hightWatermark = 0;
+  for (T& index : quantizedMesh.vertexData.indices) {
+    T originalIndex = index;
+    index = static_cast<T>(hightWatermark - index);
+    if (originalIndex == hightWatermark) {
+      ++hightWatermark;
+    }
+  }
+
+  return quantizedMesh;
+}
+} // namespace MeshRaw
+
 // We can't use sizeof(QuantizedMeshHeader) because it may be padded.
 constexpr size_t headerLength = 92;
 constexpr size_t extensionHeaderLength = 5;
@@ -1116,6 +1456,31 @@ static std::vector<std::byte> generateNormals(
   }
 
   return result;
+}
+
+QuantizedMeshLoadResult QuantizedMeshLoader::createGridMesh(
+    const CesiumGeometry::QuadtreeTileID& tileID,
+    const CesiumGeospatial::BoundingRegion& tileBoundingVolume,
+    uint32_t verticesWidth,
+    uint32_t verticesHeight) {
+
+  MeshRaw::QuantizedMesh<uint16_t> quantizedMesh =
+      MeshRaw::createGridQuantizedMesh<uint16_t>(
+          tileBoundingVolume,
+          verticesWidth,
+          verticesHeight);
+
+  std::vector<std::byte> quantizedMeshBin =
+      convertQuantizedMeshToBinary(quantizedMesh);
+  gsl::span<const std::byte> data(
+      quantizedMeshBin.data(),
+      quantizedMeshBin.size());
+
+  const std::string& url = "wgs84-ellipsoid" + std::to_string(tileID.x) + "-" +
+                           std::to_string(tileID.y) + "-" +
+                           std::to_string(tileID.level);
+
+  return load(tileID, tileBoundingVolume, url, data, false);
 }
 
 QuantizedMeshMetadataResult QuantizedMeshLoader::loadAvailabilityRectangles(
